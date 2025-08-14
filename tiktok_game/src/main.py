@@ -45,7 +45,7 @@ def generate_sine_wave(frequency, duration, sample_rate):
     """Generate a sine wave for a given frequency and duration."""
     t = np.linspace(0, duration, int(sample_rate * duration), False)
     wave = np.sin(frequency * t * 2 * np.pi)
-    wave *= 32767 # Scale to 16-bit signed integer range
+    wave *= 16000 # Scale to half of the 16-bit signed integer range to prevent clipping on overlap.
     return wave.astype(np.int16)
 
 class Note:
@@ -229,10 +229,10 @@ def generate_single_video(video_index):
     ball = Ball(WIDTH // 2, HEIGHT // 2, BALL_RADIUS, RED)
 
     circles = []
-    num_circles = np.random.randint(3, 7) # Random number of circles
+    num_circles = np.random.randint(2, 5) # Random number of circles
     circle_colors = [BLUE, RED, (0, 255, 0), (255, 165, 0)]
     for i in range(1, num_circles + 1):
-        radius = i * 100
+        radius = i * 150
         color = circle_colors[i % len(circle_colors)]
         circles.append(Circle(WIDTH // 2, HEIGHT // 2, radius, color))
 
