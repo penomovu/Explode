@@ -103,7 +103,7 @@ class Ball:
             dist_to_center = self.pos.distance_to(center)
 
             # Check for collision with the circle's arc
-            if abs(dist_to_center - circle.radius) < self.radius:
+            if abs(dist_to_center - circle.radius) < self.radius + CIRCLE_WIDTH / 2:
                 ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
                 if ball_angle < 0:
                     ball_angle += 2 * math.pi
