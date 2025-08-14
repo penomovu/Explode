@@ -80,55 +80,13 @@ class Ball:
         self.pos += self.vel
 
         center = pygame.math.Vector2(WIDTH // 2, HEIGHT // 2)
-
-        # --- Collision with Circles ---
-        for circle in circles:
-            dist_from_center = self.pos.distance_to(center)
-
-            # Broad phase collision check
-            if abs(dist_from_center - circle.radius) < self.radius:
-                ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
-
-                # Normalize angle to [0, 2*pi]
-                if ball_angle < 0:
-                    ball_angle += 2 * math.pi
-
-                # Check if the ball is in the gap
-                gap_start = circle.angle
-                gap_end = (gap_start + circle.gap_size) % (2 * math.pi)
-
-                in_gap = False
-                if gap_start < gap_end:
-                    if gap_start <= ball_angle <= gap_end:
-                        in_gap = True
-                else: # Gap wraps around 0
-                    if ball_angle >= gap_start or ball_angle <= gap_end:
-                        in_gap = True
-
-                if not in_gap:
-                    # Collision with solid part of the circle
-                    normal = (self.pos - center).normalize()
-                    self.vel.reflect_ip(normal)
-                    self.vel *= 0.9
-
-                    # Adjust position to prevent sticking
-                    if dist_from_center < circle.radius:
-                        self.pos = center + normal * (circle.radius - self.radius)
-                    else:
-                        self.pos = center + normal * (circle.radius + self.radius)
-
-
-                    # Sound and visual effect
-                    circle.start_breaking()
-                    note_to_play = MELODY[melody_index_ref[0]]
-                    audio_events.append((frame_num / FPS, note_to_play))
-                    melody_index_ref[0] = (melody_index_ref[0] + 1) % len(MELODY)
-
-        # --- Scoring on passing through gaps ---
         current_dist_from_center = self.pos.distance_to(center)
+
+        # --- Collision and Scoring with Circles ---
         for circle in circles:
+            # Check if the ball's center has crossed the circle's radius line in this frame
             if (self.prev_dist_from_center < circle.radius and current_dist_from_center >= circle.radius) or \
-               (self.prev_dist_from_center > circle.radius and current_dist_from_center <= circle.radius):
+            (self.prev_dist_from_center > circle.radius and current_dist_from_center <= circle.radius):
 
                 ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
                 if ball_angle < 0: ball_angle += 2 * math.pi
@@ -140,12 +98,29 @@ class Ball:
                 if gap_start < gap_end:
                     if gap_start <= ball_angle <= gap_end:
                         in_gap = True
-                else:
+                else: # Gap wraps around 0
                     if ball_angle >= gap_start or ball_angle <= gap_end:
                         in_gap = True
 
                 if in_gap:
                     self.score += 1
+                else:
+                    # Collision with solid part of the circle
+                    normal = (self.pos - center).normalize()
+                    self.vel.reflect_ip(normal)
+                    self.vel *= 0.9
+
+                    # Adjust position to prevent sticking
+                    if current_dist_from_center < circle.radius:
+                        self.pos = center + normal * (circle.radius - self.radius)
+                    else:
+                        self.pos = center + normal * (circle.radius + self.radius)
+
+                    # Sound and visual effect
+                    circle.start_breaking()
+                    note_to_play = MELODY[melody_index_ref[0]]
+                    audio_events.append((frame_num / FPS, note_to_play))
+                    melody_index_ref[0] = (melody_index_ref[0] + 1) % len(MELODY)
 
         self.prev_dist_from_center = current_dist_from_center
 
@@ -231,6 +206,14 @@ def generate_single_video(video_index):
 
     pygame.mixer.pre_init(SAMPLE_RATE, -16, 2, 512)
     pygame.init()
+
+    # --- Load and play background music ---
+    try:
+        pygame.mixer.music.load("tiktok_game/assets/tetris.mid")
+        pygame.mixer.music.play(-1)  # Loop indefinitely
+    except pygame.error as e:
+        print(f"Could not load or play music: {e}")
+
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("TikTok Game")
     font = pygame.font.Font(None, 100)
