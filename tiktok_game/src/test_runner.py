@@ -28,6 +28,11 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1) # Exit with error code
+    finally:
+        output_file = "tiktok_game/output/final_video_0.mp4"
+        if os.path.exists(output_file):
+            os.remove(output_file)
+            print(f"--- Cleaned up output file '{output_file}' ---")
 
     print("--- Test script finished successfully. ---")
     sys.exit(0)

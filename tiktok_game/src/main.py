@@ -7,6 +7,7 @@ import os
 from scipy.io.wavfile import write as write_wav
 import imageio_ffmpeg
 import subprocess
+import mido
 from gui import create_gui
 
 # --- Constants ---
@@ -32,9 +33,22 @@ OUTPUT_DIR = "tiktok_game/output"
 SAMPLE_RATE = 44100
 NOTE_DURATION = 0.15 # seconds
 
-# --- Melody (C Major scale pattern) ---
-# A simple, game-like melody to be played on bounces.
-MELODY = [72, 69, 71, 67, 69, 65, 67, 64] # MIDI note numbers
+def load_midi_notes(midi_path):
+    """Load musical notes from a MIDI file."""
+    notes = []
+    if not os.path.exists(midi_path):
+        print(f"MIDI file not found at {midi_path}. Using default melody.")
+        return [72, 69, 71, 67, 69, 65, 67, 64]
+    try:
+        mid = mido.MidiFile(midi_path)
+        for msg in mid:
+            if not msg.is_meta and msg.type == 'note_on':
+                notes.append(msg.note)
+    except Exception as e:
+        print(f"Could not read MIDI file {midi_path}: {e}")
+        # Fallback to a default melody
+        return [72, 69, 71, 67, 69, 65, 67, 64]
+    return notes
 
 # --- Sound Generation ---
 def midi_to_freq(midi_note):
@@ -74,55 +88,63 @@ class Ball:
         # Store the previous distance from the center to detect circle crossings
         self.prev_dist_from_center = self.pos.distance_to(pygame.math.Vector2(WIDTH // 2, HEIGHT // 2))
 
-    def update(self, circles, notes, frame_num, audio_events, melody_index_ref):
+    def update(self, circles, notes, frame_num, audio_events, melody_index_ref, midi_notes):
         """Update the ball's position, velocity, and handle collisions with circles."""
         self.vel.y += GRAVITY
         self.pos += self.vel
 
         center = pygame.math.Vector2(WIDTH // 2, HEIGHT // 2)
-        current_dist_from_center = self.pos.distance_to(center)
 
         # --- Collision and Scoring with Circles ---
         for circle in circles:
-            # Check if the ball's center has crossed the circle's radius line in this frame
-            if (self.prev_dist_from_center < circle.radius and current_dist_from_center >= circle.radius) or \
-            (self.prev_dist_from_center > circle.radius and current_dist_from_center <= circle.radius):
+            if circle.broken:
+                continue
 
+            dist_to_center = self.pos.distance_to(center)
+
+            # Check for collision with the circle's arc
+            if abs(dist_to_center - circle.radius) < self.radius:
                 ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
-                if ball_angle < 0: ball_angle += 2 * math.pi
+                if ball_angle < 0:
+                    ball_angle += 2 * math.pi
 
                 gap_start = circle.angle
-                gap_end = (gap_start + circle.gap_size) % (2 * math.pi)
+                gap_end = (circle.angle + circle.gap_size) % (2 * math.pi)
 
                 in_gap = False
                 if gap_start < gap_end:
                     if gap_start <= ball_angle <= gap_end:
                         in_gap = True
-                else: # Gap wraps around 0
+                else:  # Gap wraps around 0
                     if ball_angle >= gap_start or ball_angle <= gap_end:
                         in_gap = True
 
                 if in_gap:
-                    self.score += 1
+                    # The ball passed through the gap, check if it just crossed
+                    if (self.prev_dist_from_center < circle.radius and dist_to_center >= circle.radius) or \
+                       (self.prev_dist_from_center > circle.radius and dist_to_center <= circle.radius):
+                        self.score += 1
+                        circle.broken = True
                 else:
-                    # Collision with solid part of the circle
+                    # Collision with the solid part of the arc
                     normal = (self.pos - center).normalize()
                     self.vel.reflect_ip(normal)
-                    self.vel *= 0.9
+                    self.vel *= 0.9  # Apply damping
 
                     # Adjust position to prevent sticking
-                    if current_dist_from_center < circle.radius:
+                    if dist_to_center < circle.radius:
                         self.pos = center + normal * (circle.radius - self.radius)
                     else:
                         self.pos = center + normal * (circle.radius + self.radius)
 
                     # Sound and visual effect
                     circle.start_breaking()
-                    note_to_play = MELODY[melody_index_ref[0]]
-                    audio_events.append((frame_num / FPS, note_to_play))
-                    melody_index_ref[0] = (melody_index_ref[0] + 1) % len(MELODY)
+                    if melody_index_ref[0] < len(midi_notes):
+                        note_to_play = midi_notes[melody_index_ref[0]]
+                        audio_events.append((frame_num / FPS, note_to_play))
+                        melody_index_ref[0] += 1
 
-        self.prev_dist_from_center = current_dist_from_center
+        self.prev_dist_from_center = self.pos.distance_to(center)
 
         # --- Wall Bouncing ---
         if self.pos.x - self.radius < 0 or self.pos.x + self.radius > WIDTH:
@@ -149,6 +171,7 @@ class Circle:
         self.breaking_color = YELLOW
         self.is_breaking = False
         self.breaking_timer = 0
+        self.broken = False
         # Add hole and rotation
         self.gap_size = math.radians(60)  # 60-degree gap
         self.angle = np.random.uniform(0, 2 * math.pi)
@@ -170,6 +193,9 @@ class Circle:
 
     def draw(self, screen):
         """Draw the circle arc on the screen."""
+        if self.broken:
+            return
+
         color = self.breaking_color if self.is_breaking else self.original_color
 
         # Define the arc for drawing, leaving a gap
@@ -219,20 +245,23 @@ def generate_single_video(video_index):
     font = pygame.font.Font(None, 100)
     viral_font = pygame.font.Font(None, 150)
 
-    # Pre-generate the sounds for all notes in the melody
-    notes = {note_num: Note(note_num) for note_num in set(MELODY)}
+    # Load MIDI notes and pre-generate sounds
+    midi_notes = load_midi_notes("tiktok_game/assets/tetris.mid")
+    notes = {note_num: Note(note_num) for note_num in set(midi_notes)}
 
     melody_index_ref = [0] # Use a list to pass by reference
     audio_events = []
 
     # --- Create Game Objects ---
-    ball = Ball(WIDTH // 2, HEIGHT // 2, BALL_RADIUS, RED)
+    ball1 = Ball(WIDTH // 2 - 100, HEIGHT // 2, BALL_RADIUS, RED)
+    ball2 = Ball(WIDTH // 2 + 100, HEIGHT // 2, BALL_RADIUS, BLUE)
+    balls = [ball1, ball2]
 
     circles = []
-    num_circles = np.random.randint(3, 7) # Random number of circles
+    num_circles = 100
     circle_colors = [BLUE, RED, (0, 255, 0), (255, 165, 0)]
     for i in range(1, num_circles + 1):
-        radius = i * 100
+        radius = i * (HEIGHT // (num_circles * 2)) # Distribute circles evenly
         color = circle_colors[i % len(circle_colors)]
         circles.append(Circle(WIDTH // 2, HEIGHT // 2, radius, color))
 
@@ -252,19 +281,24 @@ def generate_single_video(video_index):
                 running = False
 
         # --- Update all game objects ---
-        ball.update(circles, notes, frame_num, audio_events, melody_index_ref)
+        for ball in balls:
+            ball.update(circles, notes, frame_num, audio_events, melody_index_ref, midi_notes)
         for circle in circles:
             circle.update()
 
         # --- Drawing ---
         screen.fill(BACKGROUND_COLOR)
-        ball.draw(screen)
+        for ball in balls:
+            ball.draw(screen)
         for circle in circles:
             circle.draw(screen)
 
-        # Draw score
-        score_text = font.render(f"{ball.score}", True, FONT_COLOR)
-        screen.blit(score_text, (50, 50))
+        # Draw scores
+        score1_text = font.render(f"{ball1.score}", True, ball1.color)
+        screen.blit(score1_text, (50, 50))
+        score2_text = font.render(f"{ball2.score}", True, ball2.color)
+        score2_rect = score2_text.get_rect(topright=(WIDTH - 50, 50))
+        screen.blit(score2_text, score2_rect)
 
         # Add "viral" text overlay
         viral_text = viral_font.render("Are you stupid?", True, (0,0,0,180))
