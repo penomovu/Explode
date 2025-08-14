@@ -28,20 +28,33 @@ This project is a recreation of a viral TikTok video format, as described in the
 
 ## Usage
 
-The application has two modes, controlled by the `VIDEO_MODE` constant in `src/main.py`.
+The application is now controlled via a graphical user interface (GUI).
 
-### Interactive Mode
-
-To play the game interactively, set `VIDEO_MODE = False` in `src/main.py`. Then run the script:
-
+To start the application, run:
 ```bash
-python src/main.py
+python tiktok_game/src/main.py
 ```
 
-### Video Generation Mode
+This will open a window with the following options:
 
-To automatically generate a video, set `VIDEO_MODE = True`. This is the default setting. When you run the script in this mode, it will simulate the game for a fixed duration and save the output as `output/final_video.mp4`.
+### Video Generation
+1.  Enter the number of videos you want to create.
+2.  Click the "Generate Videos" button.
+3.  The application will generate the videos in the background and save them in the `tiktok_game/output/` directory.
 
-```bash
-python src/main.py
-```
+### YouTube Uploading
+1.  **Authentication (First-time setup):**
+    *   Go to the [Google API Console](https://console.developers.google.com/).
+    *   Create a new project.
+    *   Enable the **YouTube Data API v3**.
+    *   Create credentials for an **OAuth client ID**.
+    *   Select **Desktop app** as the application type.
+    *   Download the JSON credentials file, rename it to `client_secrets.json`, and place it in the root `tiktok_game/` directory of this project.
+    *   The first time you try to upload, a browser window will open asking you to authorize the application. After you approve, a `token.pickle` file will be created to store your credentials for future sessions.
+
+2.  **Uploading a Video:**
+    *   Click the "Refresh List" button to see the list of generated videos.
+    *   Select a video from the list.
+    *   Fill in the "Title", "Description", and "Tags" for your video.
+    *   Choose a privacy status ("Public", "Private", or "Unlisted").
+    *   Click the "Upload Selected Video" button.

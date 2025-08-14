@@ -7,6 +7,7 @@ import os
 from scipy.io.wavfile import write as write_wav
 import imageio_ffmpeg
 import subprocess
+from gui import create_gui
 
 # --- Constants ---
 WIDTH, HEIGHT = 1080, 1920 # TikTok video dimensions
@@ -22,13 +23,9 @@ BLUE = (0, 0, 255)
 YELLOW = (255, 255, 0) # Color for the "breaking" effect
 
 # --- Video Generation ---
-VIDEO_MODE = True # Set to False for interactive mode
 VIDEO_DURATION = 10 # seconds
 FPS = 60
 OUTPUT_DIR = "tiktok_game/output"
-VIDEO_FILE = os.path.join(OUTPUT_DIR, "temp_video.mp4")
-AUDIO_FILE = os.path.join(OUTPUT_DIR, "temp_audio.wav")
-FINAL_VIDEO_FILE = os.path.join(OUTPUT_DIR, "final_video.mp4")
 
 
 # --- Music Constants ---
@@ -38,9 +35,6 @@ NOTE_DURATION = 0.15 # seconds
 # --- Melody (C Major scale pattern) ---
 # A simple, game-like melody to be played on bounces.
 MELODY = [72, 69, 71, 67, 69, 65, 67, 64] # MIDI note numbers
-melody_index = 0
-audio_events = [] # To store (timestamp, note_id) for video generation
-
 
 # --- Sound Generation ---
 def midi_to_freq(midi_note):
@@ -80,32 +74,78 @@ class Ball:
         # Store the previous distance from the center to detect circle crossings
         self.prev_dist_from_center = self.pos.distance_to(pygame.math.Vector2(WIDTH // 2, HEIGHT // 2))
 
-    def update(self, circles, notes, frame_num):
-        """Update the ball's position, velocity, and handle circle crossings."""
-        global melody_index
+    def update(self, circles, notes, frame_num, audio_events, melody_index_ref):
+        """Update the ball's position, velocity, and handle collisions with circles."""
         self.vel.y += GRAVITY
         self.pos += self.vel
 
-        # --- Circle Crossing Detection ---
         center = pygame.math.Vector2(WIDTH // 2, HEIGHT // 2)
-        current_dist_from_center = self.pos.distance_to(center)
 
+        # --- Collision with Circles ---
         for circle in circles:
-            # Check if the ball crossed the circle's radius in the last frame
+            dist_from_center = self.pos.distance_to(center)
+
+            # Broad phase collision check
+            if abs(dist_from_center - circle.radius) < self.radius:
+                ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
+
+                # Normalize angle to [0, 2*pi]
+                if ball_angle < 0:
+                    ball_angle += 2 * math.pi
+
+                # Check if the ball is in the gap
+                gap_start = circle.angle
+                gap_end = (gap_start + circle.gap_size) % (2 * math.pi)
+
+                in_gap = False
+                if gap_start < gap_end:
+                    if gap_start <= ball_angle <= gap_end:
+                        in_gap = True
+                else: # Gap wraps around 0
+                    if ball_angle >= gap_start or ball_angle <= gap_end:
+                        in_gap = True
+
+                if not in_gap:
+                    # Collision with solid part of the circle
+                    normal = (self.pos - center).normalize()
+                    self.vel.reflect_ip(normal)
+                    self.vel *= 0.9
+
+                    # Adjust position to prevent sticking
+                    if dist_from_center < circle.radius:
+                        self.pos = center + normal * (circle.radius - self.radius)
+                    else:
+                        self.pos = center + normal * (circle.radius + self.radius)
+
+
+                    # Sound and visual effect
+                    circle.start_breaking()
+                    note_to_play = MELODY[melody_index_ref[0]]
+                    audio_events.append((frame_num / FPS, note_to_play))
+                    melody_index_ref[0] = (melody_index_ref[0] + 1) % len(MELODY)
+
+        # --- Scoring on passing through gaps ---
+        current_dist_from_center = self.pos.distance_to(center)
+        for circle in circles:
             if (self.prev_dist_from_center < circle.radius and current_dist_from_center >= circle.radius) or \
                (self.prev_dist_from_center > circle.radius and current_dist_from_center <= circle.radius):
 
-                # Trigger visual effect and sound
-                circle.start_breaking()
-                note_to_play = MELODY[melody_index]
-                if VIDEO_MODE:
-                    audio_events.append((frame_num / FPS, note_to_play))
-                else:
-                    notes[note_to_play].play()
-                melody_index = (melody_index + 1) % len(MELODY)
+                ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
+                if ball_angle < 0: ball_angle += 2 * math.pi
 
-                # Increment score
-                self.score += 1
+                gap_start = circle.angle
+                gap_end = (gap_start + circle.gap_size) % (2 * math.pi)
+
+                in_gap = False
+                if gap_start < gap_end:
+                    if gap_start <= ball_angle <= gap_end:
+                        in_gap = True
+                else:
+                    if ball_angle >= gap_start or ball_angle <= gap_end:
+                        in_gap = True
+
+                if in_gap:
+                    self.score += 1
 
         self.prev_dist_from_center = current_dist_from_center
 
@@ -117,7 +157,7 @@ class Ball:
             self.vel.y *= -0.9
             self.pos.y = self.radius
         if self.pos.y + self.radius > HEIGHT:
-            self.vel.y *= -0.9 # Energy loss on bounce
+            self.vel.y *= -0.9
             self.pos.y = HEIGHT - self.radius
 
 
@@ -126,7 +166,7 @@ class Ball:
         pygame.draw.circle(screen, self.color, (int(self.pos.x), int(self.pos.y)), self.radius)
 
 class Circle:
-    """Class to represent a circle."""
+    """Class to represent a rotating circle with a gap."""
     def __init__(self, x, y, radius, color):
         self.pos = pygame.math.Vector2(x, y)
         self.radius = radius
@@ -134,25 +174,42 @@ class Circle:
         self.breaking_color = YELLOW
         self.is_breaking = False
         self.breaking_timer = 0
+        # Add hole and rotation
+        self.gap_size = math.radians(60)  # 60-degree gap
+        self.angle = np.random.uniform(0, 2 * math.pi)
+        self.rotation_speed = np.random.uniform(-0.02, 0.02)
 
     def start_breaking(self):
         """Initiate the breaking effect (color flash)."""
         self.is_breaking = True
-        self.breaking_timer = 30  # 0.5 seconds at 60fps
+        self.breaking_timer = 15  # Flash for 0.25 seconds at 60fps
 
     def update(self):
-        """Handle the breaking effect timer."""
+        """Handle the breaking effect timer and rotation."""
         if self.is_breaking:
             self.breaking_timer -= 1
             if self.breaking_timer <= 0:
                 self.is_breaking = False
+        self.angle += self.rotation_speed
+        self.angle %= (2 * math.pi) # Keep angle in [0, 2*pi]
 
     def draw(self, screen):
-        """Draw the circle on the screen."""
+        """Draw the circle arc on the screen."""
         color = self.breaking_color if self.is_breaking else self.original_color
-        pygame.draw.circle(screen, color, (int(self.pos.x), int(self.pos.y)), self.radius, CIRCLE_WIDTH)
 
-def generate_final_audio(events, duration, sample_rate, notes):
+        # Define the arc for drawing, leaving a gap
+        start_angle = self.angle + self.gap_size
+        end_angle = self.angle + 2 * math.pi
+
+        rect = pygame.Rect(self.pos.x - self.radius, self.pos.y - self.radius, self.radius * 2, self.radius * 2)
+        try:
+            # This can fail if the start and end angles are too close
+            pygame.draw.arc(screen, color, rect, start_angle, end_angle, CIRCLE_WIDTH)
+        except pygame.error:
+            # Draw a full circle as a fallback if arc fails
+            pygame.draw.circle(screen, color, (int(self.pos.x), int(self.pos.y)), self.radius, CIRCLE_WIDTH)
+
+def generate_final_audio(events, duration, sample_rate, notes, audio_file):
     """Generate a WAV file from the recorded audio events."""
     total_samples = int(duration * sample_rate)
     audio_buffer = np.zeros(total_samples, dtype=np.int16)
@@ -163,15 +220,14 @@ def generate_final_audio(events, duration, sample_rate, notes):
         end_sample = start_sample + len(note_wave)
         if end_sample < total_samples:
             audio_buffer[start_sample:end_sample] += note_wave
-    write_wav(AUDIO_FILE, sample_rate, audio_buffer)
+    write_wav(audio_file, sample_rate, audio_buffer)
 
 
-def main():
-    """Main function to run the game and video generation."""
-    # Use dummy drivers for video and audio in video generation mode
-    if VIDEO_MODE:
-        os.environ["SDL_VIDEODRIVER"] = "dummy"
-        os.environ["SDL_AUDIODRIVER"] = "dummy"
+def generate_single_video(video_index):
+    """Generate a single video."""
+    # Use dummy drivers for video and audio
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    os.environ["SDL_AUDIODRIVER"] = "dummy"
 
     pygame.mixer.pre_init(SAMPLE_RATE, -16, 2, 512)
     pygame.init()
@@ -182,6 +238,9 @@ def main():
 
     # Pre-generate the sounds for all notes in the melody
     notes = {note_num: Note(note_num) for note_num in set(MELODY)}
+
+    melody_index_ref = [0] # Use a list to pass by reference
+    audio_events = []
 
     # --- Create Game Objects ---
     ball = Ball(WIDTH // 2, HEIGHT // 2, BALL_RADIUS, RED)
@@ -194,13 +253,14 @@ def main():
         color = circle_colors[i % len(circle_colors)]
         circles.append(Circle(WIDTH // 2, HEIGHT // 2, radius, color))
 
+    # --- Set up video writer ---
+    video_file = os.path.join(OUTPUT_DIR, f"temp_video_{video_index}.mp4")
+    audio_file = os.path.join(OUTPUT_DIR, f"temp_audio_{video_index}.wav")
+    final_video_file = os.path.join(OUTPUT_DIR, f"final_video_{video_index}.mp4")
 
-    video_writer = None
-    if VIDEO_MODE:
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        video_writer = imageio.get_writer(VIDEO_FILE, fps=FPS)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    video_writer = imageio.get_writer(video_file, fps=FPS)
 
-    clock = pygame.time.Clock()
     frame_num = 0
     running = True
     while running:
@@ -209,7 +269,7 @@ def main():
                 running = False
 
         # --- Update all game objects ---
-        ball.update(circles, notes, frame_num)
+        ball.update(circles, notes, frame_num, audio_events, melody_index_ref)
         for circle in circles:
             circle.update()
 
@@ -223,55 +283,54 @@ def main():
         score_text = font.render(f"{ball.score}", True, FONT_COLOR)
         screen.blit(score_text, (50, 50))
 
-        # Add "viral" text overlay in video mode
-        if VIDEO_MODE:
-            viral_text = viral_font.render("Are you stupid?", True, (0,0,0,180))
-            text_rect = viral_text.get_rect(center=(WIDTH/2, HEIGHT/4))
-            screen.blit(viral_text, text_rect)
+        # Add "viral" text overlay
+        viral_text = viral_font.render("Are you stupid?", True, (0,0,0,180))
+        text_rect = viral_text.get_rect(center=(WIDTH/2, HEIGHT/4))
+        screen.blit(viral_text, text_rect)
 
         pygame.display.flip()
 
         # --- Video Frame Capturing ---
-        if VIDEO_MODE:
-            frame = pygame.surfarray.array3d(screen)
-            # Pygame and imageio have different coordinate systems
-            frame = np.transpose(frame, (1, 0, 2))
-            video_writer.append_data(frame)
-            frame_num += 1
-            # Stop after the desired duration
-            if frame_num >= VIDEO_DURATION * FPS:
-                running = False
+        frame = pygame.surfarray.array3d(screen)
+        frame = np.transpose(frame, (1, 0, 2))
+        video_writer.append_data(frame)
+        frame_num += 1
+        if frame_num >= VIDEO_DURATION * FPS:
+            running = False
 
-        # In interactive mode, tick the clock to control FPS
-        if not VIDEO_MODE:
-            clock.tick(FPS)
+    # --- Post-processing ---
+    video_writer.close()
+    print(f"Video frames saved to {video_file}")
+    generate_final_audio(audio_events, VIDEO_DURATION, SAMPLE_RATE, notes, audio_file)
+    print(f"Audio file generated: {audio_file}")
 
-    # --- Post-processing for Video Generation ---
-    if VIDEO_MODE and video_writer:
-        video_writer.close()
-        print(f"Video frames saved to {VIDEO_FILE}")
-        generate_final_audio(audio_events, VIDEO_DURATION, SAMPLE_RATE, notes)
-        print(f"Audio file generated: {AUDIO_FILE}")
+    # Merge video and audio
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    command = [
+        ffmpeg_exe, '-y',
+        '-i', video_file, '-i', audio_file,
+        '-c:v', 'copy', '-c:a', 'aac', '-strict', 'experimental',
+        final_video_file
+    ]
+    print("Merging video and audio with ffmpeg...")
+    subprocess.run(command, check=True)
+    print(f"Final video saved to {final_video_file}")
 
-        # Merge video and audio using the ffmpeg executable from imageio-ffmpeg
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        command = [
-            ffmpeg_exe,
-            '-y',
-            '-i', VIDEO_FILE,
-            '-i', AUDIO_FILE,
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-strict', 'experimental',
-            FINAL_VIDEO_FILE
-        ]
-
-        print("Merging video and audio with ffmpeg...")
-        subprocess.run(command, check=True)
-        print(f"Final video saved to {FINAL_VIDEO_FILE}")
+    # Clean up temporary files
+    os.remove(video_file)
+    os.remove(audio_file)
 
     pygame.quit()
-    sys.exit()
+
+def generate_videos(num_videos):
+    """Generate a specified number of videos."""
+    for i in range(num_videos):
+        print(f"--- Generating video {i + 1} of {num_videos} ---")
+        generate_single_video(i)
+    print("--- All videos generated. ---")
+
 
 if __name__ == "__main__":
-    main()
+    # The main entry point of the application is now the GUI.
+    # The GUI will call generate_videos().
+    create_gui()
