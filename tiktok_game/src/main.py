@@ -284,7 +284,7 @@ def generate_single_video(video_index):
     # --- Post-processing ---
     video_writer.close()
     print(f"Video frames saved to {video_file}")
-    generate_final_audio(audio_events, VIDEO_DURATION, SAMPLE_RATE, notes, audio_file)
+    generate_.final_audio(audio_events, VIDEO_DURATION, SAMPLE_RATE, notes, audio_file)
     print(f"Audio file generated: {audio_file}")
 
     # Merge video and audio
