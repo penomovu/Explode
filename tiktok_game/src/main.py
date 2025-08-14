@@ -13,8 +13,7 @@ WIDTH, HEIGHT = 1080, 1920 # TikTok video dimensions
 BACKGROUND_COLOR = (255, 255, 255)
 BALL_RADIUS = 30
 GRAVITY = 0.5
-ARC_RADIUS = 200
-ARC_WIDTH = 20
+CIRCLE_WIDTH = 15
 FONT_COLOR = (0, 0, 0)
 
 # Colors
@@ -75,108 +74,83 @@ class Ball:
         self.pos = pygame.math.Vector2(x, y)
         self.radius = radius
         self.color = color
-        # Start with a random velocity for variety in generated videos
-        self.vel = pygame.math.Vector2(np.random.randint(-10, 10), np.random.randint(-10, 0))
+        # Start with a random velocity
+        self.vel = pygame.math.Vector2(np.random.randint(-5, 5), np.random.randint(-5, 5))
         self.score = 0
-        # Flags to prevent multiple interactions for a single event
-        self.last_passed_arc = None
-        self.last_collided_arc = None
+        # Store the previous distance from the center to detect circle crossings
+        self.prev_dist_from_center = self.pos.distance_to(pygame.math.Vector2(WIDTH // 2, HEIGHT // 2))
 
-    def update(self, arcs, notes, frame_num):
-        """Update the ball's position, velocity, and handle collisions."""
+    def update(self, circles, notes, frame_num):
+        """Update the ball's position, velocity, and handle circle crossings."""
         global melody_index
         self.vel.y += GRAVITY
         self.pos += self.vel
 
-        for arc in arcs:
-            dist_vec = self.pos - arc.pos
-            distance = dist_vec.length()
-            # Check if the ball is within the radial bounds of the arc
-            is_colliding = distance < self.radius + arc.radius and distance > arc.radius - self.radius
+        # --- Circle Crossing Detection ---
+        center = pygame.math.Vector2(WIDTH // 2, HEIGHT // 2)
+        current_dist_from_center = self.pos.distance_to(center)
 
-            if is_colliding:
-                # Check if the collision point is on the arc or in the gap
-                angle = math.degrees(math.atan2(-dist_vec.y, dist_vec.x)) % 360
-                start_angle = arc.start_angle % 360
-                end_angle = arc.end_angle % 360
-                on_arc = (start_angle < end_angle and start_angle <= angle <= end_angle) or \
-                         (start_angle > end_angle and (angle >= start_angle or angle <= end_angle))
+        for circle in circles:
+            # Check if the ball crossed the circle's radius in the last frame
+            if (self.prev_dist_from_center < circle.radius and current_dist_from_center >= circle.radius) or \
+               (self.prev_dist_from_center > circle.radius and current_dist_from_center <= circle.radius):
 
-                if on_arc:
-                    # Play a note on the first frame of collision with an arc
-                    if self.last_collided_arc != arc:
-                        note_to_play = MELODY[melody_index]
-                        if VIDEO_MODE:
-                            audio_events.append((frame_num / FPS, note_to_play))
-                        else:
-                            notes[note_to_play].play()
-                        melody_index = (melody_index + 1) % len(MELODY)
-                    self.last_collided_arc = arc
+                # Trigger visual effect and sound
+                circle.start_breaking()
+                note_to_play = MELODY[melody_index]
+                if VIDEO_MODE:
+                    audio_events.append((frame_num / FPS, note_to_play))
+                else:
+                    notes[note_to_play].play()
+                melody_index = (melody_index + 1) % len(MELODY)
 
-                    # Resolve collision by pushing the ball out and reflecting velocity
-                    if distance != 0:
-                        overlap = (self.radius + arc.radius - distance) if distance > arc.radius else (self.radius - (arc.radius - distance))
-                        self.pos += dist_vec.normalize() * overlap
-                    normal = dist_vec.normalize() if dist_vec.length() != 0 else pygame.math.Vector2(0, -1)
-                    self.vel = self.vel.reflect(normal) * 0.9 # 0.9 for energy loss
-                else: # Ball is in the gap
-                    self.last_collided_arc = None
-                    # Score a point on the first frame of passing through a gap
-                    if self.last_passed_arc != arc:
-                        self.score += 1
-                        self.last_passed_arc = arc
-                        arc.start_breaking()
-            else:
-                # Reset flags when the ball is no longer colliding with the arc
-                if self.last_passed_arc == arc:
-                    self.last_passed_arc = None
-                if self.last_collided_arc == arc:
-                    self.last_collided_arc = None
+                # Increment score
+                self.score += 1
 
-        # Bounce off the side and top walls
+        self.prev_dist_from_center = current_dist_from_center
+
+        # --- Wall Bouncing ---
         if self.pos.x - self.radius < 0 or self.pos.x + self.radius > WIDTH:
-            self.vel.x *= -1
+            self.vel.x *= -0.9
             self.pos.x = np.clip(self.pos.x, self.radius, WIDTH - self.radius)
         if self.pos.y - self.radius < 0:
-            self.vel.y *= -1
+            self.vel.y *= -0.9
             self.pos.y = self.radius
+        if self.pos.y + self.radius > HEIGHT:
+            self.vel.y *= -0.9 # Energy loss on bounce
+            self.pos.y = HEIGHT - self.radius
 
 
     def draw(self, screen):
         """Draw the ball on the screen."""
         pygame.draw.circle(screen, self.color, (int(self.pos.x), int(self.pos.y)), self.radius)
 
-class CircularArc:
-    """Class to represent a rotating circular arc."""
-    def __init__(self, x, y, radius, color, start, end, speed):
+class Circle:
+    """Class to represent a circle."""
+    def __init__(self, x, y, radius, color):
         self.pos = pygame.math.Vector2(x, y)
-        self.radius, self.color, self.start_angle, self.end_angle, self.rotation_speed = radius, color, start, end, speed
-        self.is_breaking, self.breaking_timer, self.original_color, self.breaking_color = False, 0, color, YELLOW
+        self.radius = radius
+        self.original_color = color
+        self.breaking_color = YELLOW
+        self.is_breaking = False
+        self.breaking_timer = 0
 
     def start_breaking(self):
         """Initiate the breaking effect (color flash)."""
-        self.is_breaking, self.breaking_timer = True, 30 # 0.5 seconds at 60fps
+        self.is_breaking = True
+        self.breaking_timer = 30  # 0.5 seconds at 60fps
 
     def update(self):
-        """Rotate the arc and handle the breaking effect timer."""
-        self.start_angle += self.rotation_speed
-        self.end_angle += self.rotation_speed
+        """Handle the breaking effect timer."""
         if self.is_breaking:
             self.breaking_timer -= 1
             if self.breaking_timer <= 0:
                 self.is_breaking = False
 
     def draw(self, screen):
-        """Draw the arc on the screen."""
+        """Draw the circle on the screen."""
         color = self.breaking_color if self.is_breaking else self.original_color
-        rect = pygame.Rect(self.pos.x - self.radius, self.pos.y - self.radius, self.radius * 2, self.radius * 2)
-        start_rad, end_rad = math.radians(self.start_angle), math.radians(self.end_angle)
-        # Handle drawing arcs that wrap around 360 degrees
-        if start_rad > end_rad:
-            pygame.draw.arc(screen, color, rect, start_rad, math.radians(360), ARC_WIDTH)
-            pygame.draw.arc(screen, color, rect, 0, end_rad, ARC_WIDTH)
-        else:
-            pygame.draw.arc(screen, color, rect, start_rad, end_rad, ARC_WIDTH)
+        pygame.draw.circle(screen, color, (int(self.pos.x), int(self.pos.y)), self.radius, CIRCLE_WIDTH)
 
 def generate_final_audio(events, duration, sample_rate, notes):
     """Generate a WAV file from the recorded audio events."""
@@ -208,9 +182,18 @@ def main():
 
     # Pre-generate the sounds for all notes in the melody
     notes = {note_num: Note(note_num) for note_num in set(MELODY)}
-    balls = [Ball(WIDTH // 2 - 100, 100, BALL_RADIUS, RED), Ball(WIDTH // 2 + 100, 100, BALL_RADIUS, BLUE)]
-    arcs = [CircularArc(WIDTH // 2, HEIGHT // 2 + 300, ARC_RADIUS, BLUE, 45, 315, 1),
-            CircularArc(WIDTH // 2, HEIGHT // 2 + 800, ARC_RADIUS, RED, 90, 270, -1.5)]
+
+    # --- Create Game Objects ---
+    ball = Ball(WIDTH // 2, HEIGHT // 2, BALL_RADIUS, RED)
+
+    circles = []
+    num_circles = np.random.randint(3, 7) # Random number of circles
+    circle_colors = [BLUE, RED, (0, 255, 0), (255, 165, 0)]
+    for i in range(1, num_circles + 1):
+        radius = i * 100
+        color = circle_colors[i % len(circle_colors)]
+        circles.append(Circle(WIDTH // 2, HEIGHT // 2, radius, color))
+
 
     video_writer = None
     if VIDEO_MODE:
@@ -226,23 +209,19 @@ def main():
                 running = False
 
         # --- Update all game objects ---
-        for ball in balls:
-            ball.update(arcs, notes, frame_num)
-        for arc in arcs:
-            arc.update()
+        ball.update(circles, notes, frame_num)
+        for circle in circles:
+            circle.update()
 
         # --- Drawing ---
         screen.fill(BACKGROUND_COLOR)
-        for ball in balls:
-            ball.draw(screen)
-        for arc in arcs:
-            arc.draw(screen)
+        ball.draw(screen)
+        for circle in circles:
+            circle.draw(screen)
 
-        # Draw scores
-        score1_text = font.render(f"{balls[0].score}", True, FONT_COLOR)
-        score2_text = font.render(f"{balls[1].score}", True, FONT_COLOR)
-        screen.blit(score1_text, (50, 50))
-        screen.blit(score2_text, (WIDTH - 150, 50))
+        # Draw score
+        score_text = font.render(f"{ball.score}", True, FONT_COLOR)
+        screen.blit(score_text, (50, 50))
 
         # Add "viral" text overlay in video mode
         if VIDEO_MODE:
