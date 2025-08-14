@@ -139,8 +139,9 @@ class Ball:
 
                     # Sound and visual effect
                     circle.start_breaking()
-                    if melody_index_ref[0] < len(midi_notes):
-                        note_to_play = midi_notes[melody_index_ref[0]]
+                    if midi_notes:
+                        note_index = melody_index_ref[0] % len(midi_notes)
+                        note_to_play = midi_notes[note_index]
                         audio_events.append((frame_num / FPS, note_to_play))
                         melody_index_ref[0] += 1
 
@@ -258,7 +259,7 @@ def generate_single_video(video_index):
     balls = [ball1, ball2]
 
     circles = []
-    num_circles = 100
+    num_circles = 20
     circle_colors = [BLUE, RED, (0, 255, 0), (255, 165, 0)]
     for i in range(1, num_circles + 1):
         radius = i * (HEIGHT // (num_circles * 2)) # Distribute circles evenly
