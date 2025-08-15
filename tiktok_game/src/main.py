@@ -82,33 +82,70 @@ class Ball:
         self.pos = pygame.math.Vector2(x, y)
         self.radius = radius
         self.color = color
-        # Start with a random velocity
-        self.vel = pygame.math.Vector2(np.random.randint(-5, 5), np.random.randint(-5, 5))
+        self.vel = pygame.math.Vector2(np.random.uniform(-5, 5), np.random.uniform(-5, 5))
         self.score = 0
-        # Store the previous distance from the center to detect circle crossings
         self.prev_dist_from_center = self.pos.distance_to(pygame.math.Vector2(WIDTH // 2, HEIGHT // 2))
 
-    def update(self, circles, notes, frame_num, audio_events, melody_index_ref, midi_notes):
-        """Update the ball's position, velocity, and handle collisions with circles."""
-        self.vel.y += GRAVITY
-        self.pos += self.vel
+    def update(self, balls, circles, notes, frame_num, audio_events, melody_index_ref, midi_notes):
+        """Handle physics updates, including collisions, over several sub-steps."""
+        sub_steps = 4 # Increase for more accuracy
+        dt = 1.0 / sub_steps
+        for _ in range(sub_steps):
+            self.sub_update(dt, balls, circles, notes, frame_num, audio_events, melody_index_ref, midi_notes)
+
+    def sub_update(self, dt, balls, circles, notes, frame_num, audio_events, melody_index_ref, midi_notes):
+        """Update the ball's position, velocity, and handle collisions for a single sub-step."""
+        # Apply gravity and update position
+        self.vel.y += GRAVITY * dt
+        self.pos += self.vel * dt
 
         center = pygame.math.Vector2(WIDTH // 2, HEIGHT // 2)
 
+        # --- Wall bouncing ---
+        if self.pos.x - self.radius < 0:
+            self.pos.x = self.radius
+            self.vel.x *= -0.9
+        elif self.pos.x + self.radius > WIDTH:
+            self.pos.x = WIDTH - self.radius
+            self.vel.x *= -0.9
+        if self.pos.y - self.radius < 0:
+            self.pos.y = self.radius
+            self.vel.y *= -0.9
+        elif self.pos.y + self.radius > HEIGHT:
+            self.pos.y = HEIGHT - self.radius
+            self.vel.y *= -0.9
+
+        # --- Ball-to-ball collisions ---
+        for other_ball in balls:
+            if self == other_ball:
+                continue
+            dist_vec = self.pos - other_ball.pos
+            dist = dist_vec.length()
+            if dist < self.radius + other_ball.radius:
+                overlap = (self.radius + other_ball.radius) - dist
+                normal = dist_vec.normalize()
+                # Separate the balls
+                self.pos += normal * overlap / 2
+                other_ball.pos -= normal * overlap / 2
+                # Elastic collision response
+                v1_n = self.vel.dot(normal)
+                v2_n = other_ball.vel.dot(normal)
+                self.vel -= normal * (v1_n - v2_n)
+                other_ball.vel += normal * (v1_n - v2_n)
+
         # --- Collision and Scoring with Circles ---
+        dist_to_center = self.pos.distance_to(center)
         for circle in circles:
             if circle.broken:
                 continue
 
-            dist_to_center = self.pos.distance_to(center)
+            # Check if the ball is crossing the circle's radius
+            is_crossing = (self.prev_dist_from_center < circle.radius and dist_to_center >= circle.radius) or \
+                          (self.prev_dist_from_center > circle.radius and dist_to_center <= circle.radius)
 
-            # Check for collision with the circle's arc
-            if abs(dist_to_center - circle.radius) < self.radius + CIRCLE_WIDTH / 2:
-                ball_angle = math.atan2(self.pos.y - center.y, self.pos.x - center.x)
-                if ball_angle < 0:
-                    ball_angle += 2 * math.pi
-
-                gap_start = circle.angle
+            if is_crossing:
+                ball_angle = (math.atan2(self.pos.y - center.y, self.pos.x - center.x) + 2 * math.pi) % (2 * math.pi)
+                gap_start = (circle.angle) % (2 * math.pi)
                 gap_end = (circle.angle + circle.gap_size) % (2 * math.pi)
 
                 in_gap = False
@@ -120,22 +157,13 @@ class Ball:
                         in_gap = True
 
                 if in_gap:
-                    # The ball passed through the gap, check if it just crossed
-                    if (self.prev_dist_from_center < circle.radius and dist_to_center >= circle.radius) or \
-                       (self.prev_dist_from_center > circle.radius and dist_to_center <= circle.radius):
-                        self.score += 1
-                        circle.broken = True
+                    self.score += 1
+                    circle.broken = True
                 else:
                     # Collision with the solid part of the arc
                     normal = (self.pos - center).normalize()
                     self.vel.reflect_ip(normal)
                     self.vel *= 0.9  # Apply damping
-
-                    # Adjust position to prevent sticking
-                    if dist_to_center < circle.radius:
-                        self.pos = center + normal * (circle.radius - self.radius)
-                    else:
-                        self.pos = center + normal * (circle.radius + self.radius)
 
                     # Sound and visual effect
                     circle.start_breaking()
@@ -145,18 +173,7 @@ class Ball:
                         audio_events.append((frame_num / FPS, note_to_play))
                         melody_index_ref[0] += 1
 
-        self.prev_dist_from_center = self.pos.distance_to(center)
-
-        # --- Wall Bouncing ---
-        if self.pos.x - self.radius < 0 or self.pos.x + self.radius > WIDTH:
-            self.vel.x *= -0.9
-            self.pos.x = np.clip(self.pos.x, self.radius, WIDTH - self.radius)
-        if self.pos.y - self.radius < 0:
-            self.vel.y *= -0.9
-            self.pos.y = self.radius
-        if self.pos.y + self.radius > HEIGHT:
-            self.vel.y *= -0.9
-            self.pos.y = HEIGHT - self.radius
+        self.prev_dist_from_center = dist_to_center
 
 
     def draw(self, screen):
@@ -283,7 +300,7 @@ def generate_single_video(video_index):
 
         # --- Update all game objects ---
         for ball in balls:
-            ball.update(circles, notes, frame_num, audio_events, melody_index_ref, midi_notes)
+            ball.update(balls, circles, notes, frame_num, audio_events, melody_index_ref, midi_notes)
         for circle in circles:
             circle.update()
 
